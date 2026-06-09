@@ -1,0 +1,38 @@
+name: ema_lot_scanner
+description: "A new Flutter project for SAP Lot Scanning."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  shared_preferences: ^2.2.2
+
+  # CORRECTION : Ces lignes doivent être alignées avec "flutter:"
+  cupertino_icons: ^1.0.8
+  http: ^1.2.1
+  mobile_scanner: ^5.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icon/ema_chocolate_logo-removebg-preview.png
+
+
+flutter_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/icon/ema_chocolate_logo-removebg-preview.png"
+  remove_alpha_ios: true # Pour éviter un fond noir sur iPhone
+  adaptive_icon_background: "#FFFFFF" # Couleur de fond pour Android (ici blanc)
+  adaptive_icon_foreground: "assets/icon/ema_chocolate_logo-removebg-preview.png"
