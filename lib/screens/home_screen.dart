@@ -21,14 +21,15 @@ class _HomeScreenState extends State<HomeScreen> {
   LotInfo? lotDetails;
   bool isLoading = false;
 
-  // États pour la gestion des magasins
-  List<Map<String, String>> _warehouses = [];
-  String? _selectedSourceWhs;
-  bool _isLoadingWhs = true;
-
   // Facteur de conversion unitaire
   double _quantiteParCarton = 1.0;
   double _calculatedTotalQuantity = 0.0;
+
+  String? _selectedCurrentWhs; // Conserve le code du magasin actuel choisi ou détecté (ex: 'MAG_DISPO')
+  List<Map<String, String>> _availableWarehouses = []; // Contient la liste structurée [{'code': '...', 'name': '...'}]
+
+  // Permet de savoir si c'est le chargement initial du lot sur l'écran ou un scan successif
+  bool _isFirstScan = true;
 
   // Palette Premium (Slate & Indigo Deep)
   final Color primaryDark = const Color(0xFF0F172A);
@@ -38,50 +39,56 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _loadWarehouses();
+    _loadAvailableWarehouses();
   }
 
-  Future<void> _loadWarehouses() async {
-    setState(() => _isLoadingWhs = true);
-    try {
-      final list = await _sapService.fetchAllWarehouses();
-      final prefs = await SharedPreferences.getInstance();
-      String? savedWhs = prefs.getString('whsSource');
+  // Charge de manière dynamique tous les magasins depuis SAP Service Layer
+  void _loadAvailableWarehouses() async {
+    final prefs = await SharedPreferences.getInstance();
 
-      setState(() {
-        _warehouses = list;
-        if (savedWhs != null && _warehouses.any((w) => w['code'] == savedWhs)) {
-          _selectedSourceWhs = savedWhs;
-        } else if (_warehouses.isNotEmpty) {
-          _selectedSourceWhs = _warehouses.first['code'];
-          prefs.setString('whsSource', _selectedSourceWhs!);
-        }
-        _isLoadingWhs = false;
-      });
-    } catch (e) {
-      setState(() => _isLoadingWhs = false);
-      _showStatusSnackBar("Erreur de chargement des magasins.", isError: true);
-    }
-  }
+    // 1. Initialisation temporaire locale avec les magasins par défaut du paramétrage
+    List<String> defaultCodes = [
+      prefs.getString('whsSource') ?? 'MAG_DISPO',
+      prefs.getString('whsQuarantaine') ?? 'QUARANTAINE',
+      prefs.getString('whsLiberer') ?? 'LIBERER',
+    ].where((whs) => whs.isNotEmpty).toSet().toList();
 
-  Future<void> _onWarehouseChanged(String? newWhs) async {
-    if (newWhs == null) return;
     setState(() {
-      _selectedSourceWhs = newWhs;
-      // Réinitialisation pour forcer un contrôle strict au prochain scan
-      lotDetails = null;
-      _lotController.clear();
-      _cartonController.clear();
-      _calculatedTotalQuantity = 0.0;
+      _availableWarehouses = defaultCodes.map((code) => {
+        'code': code,
+        'name': 'Magasin Paramétré',
+      }).toList();
     });
+
+    try {
+      // 2. Appel à ta méthode SAP fetchAllWarehouses
+      List<Map<String, String>> sapWarehouses = await _sapService.fetchAllWarehouses();
+
+      if (sapWarehouses.isNotEmpty) {
+        setState(() {
+          // Utilisation d'un Map temporaire indexé par 'code' pour fusionner sans doublons
+          final Map<String, Map<String, String>> uniqueWhs = {};
+
+          for (var whs in _availableWarehouses) {
+            uniqueWhs[whs['code']!] = whs;
+          }
+          for (var whs in sapWarehouses) {
+            uniqueWhs[whs['code']!] = whs; // Écrase avec les vrais noms SAP
+          }
+
+          _availableWarehouses = uniqueWhs.values.toList();
+
+          // Tri alphabétique des magasins par Code pour le confort visuel
+          _availableWarehouses.sort((a, b) => a['code']!.compareTo(b['code']!));
+        });
+      }
+    } catch (e) {
+      debugPrint("Erreur lors de la récupération des magasins SAP : $e");
+    }
   }
 
   void _fetchData() async {
     if (_lotController.text.isEmpty) return;
-    if (_selectedSourceWhs == null) {
-      _showStatusSnackBar("Veuillez d'abord sélectionner un magasin source à l'accueil.", isError: true);
-      return;
-    }
 
     setState(() => isLoading = true);
     final data = await _sapService.fetchLotData(_lotController.text);
@@ -93,29 +100,43 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final prefs = await SharedPreferences.getInstance();
-    // 1ère VÉRIFICATION : Correspondance avec le magasin par défaut configuré dans les Paramètres
     String? globalParamWhs = prefs.getString('whsSource');
-    if (data.warehouse != null && data.warehouse != globalParamWhs) {
-      setState(() => isLoading = false);
-      _showStatusSnackBar(
-          "Vérification 1 échouée : Ce lot appartient au magasin [${data.warehouse}] et non au magasin Source par défaut des Paramètres [$globalParamWhs].",
-          isError: true
-      );
-      return;
-    }
 
-    // 2ème VÉRIFICATION : Correspondance avec le magasin sélectionné sur l'écran d'accueil
-    if (data.warehouse != null && data.warehouse != _selectedSourceWhs) {
-      setState(() => isLoading = false);
-      _showStatusSnackBar(
-          "Vérification 2 échouée : Ce lot est localisé dans [${data.warehouse}] et ne correspond pas au choix actuel de l'accueil [$_selectedSourceWhs].",
-          isError: true
-      );
-      return;
+    // REGLE MÉTIER 1er Scan : Vérification stricte du magasin Source général
+    if (_isFirstScan) {
+      if (data.warehouse != null && data.warehouse != globalParamWhs) {
+        setState(() => isLoading = false);
+        _showStatusSnackBar(
+            "Vérification Échouée (1er Scan) : Ce lot appartient au magasin [${data.warehouse}] et non au magasin Source configuré [$globalParamWhs].",
+            isError: true
+        );
+        return;
+      }
+    } else {
+      // RÈGLE MÉTIER Scans Successifs : Vérification par rapport au champ d'accueil actuel de reprise
+      if (_selectedCurrentWhs != null && data.warehouse != _selectedCurrentWhs) {
+        setState(() => isLoading = false);
+        _showStatusSnackBar(
+            "Vérification Échouée (Scan Successif) : Le magasin SAP [${data.warehouse}] ne correspond pas au magasin de reprise sélectionné [$_selectedCurrentWhs].",
+            isError: true
+        );
+        return;
+      }
     }
 
     setState(() {
       lotDetails = data;
+      _selectedCurrentWhs = data.warehouse;
+
+      // Sécurité Dropdown : Si le magasin du lot n'est pas dans la liste globale, on l'injecte à la volée
+      bool exists = _availableWarehouses.any((whs) => whs['code'] == _selectedCurrentWhs);
+      if (_selectedCurrentWhs != null && !exists) {
+        _availableWarehouses.add({
+          'code': _selectedCurrentWhs!,
+          'name': 'Magasin Actuel du Lot',
+        });
+      }
+
       _cartonController.text = lotDetails!.qteCarton.toString();
 
       _quantiteParCarton = lotDetails!.qteCarton > 0
@@ -125,7 +146,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _calculatedTotalQuantity = lotDetails!.totalQuantity;
       isLoading = false;
     });
-    _showStatusSnackBar("Double validation réussie pour le lot !");
+    _showStatusSnackBar("Validation réussie pour le lot !");
   }
 
   Future<void> _executerTransfert(String type) async {
@@ -133,13 +154,20 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => isLoading = true);
     try {
       final prefs = await SharedPreferences.getInstance();
-      String? sourceWhs = _selectedSourceWhs;
+
+      String? sourceWhs = _selectedCurrentWhs;
       String? targetWhs = (type == "QUARANTAINE")
           ? prefs.getString('whsQuarantaine')
           : prefs.getString('whsLiberer');
 
       if (sourceWhs == null || targetWhs == null) {
-        _showStatusSnackBar("Configuration manquante : Magasins cibles non définis dans les paramètres.", isError: true);
+        _showStatusSnackBar("Configuration manquante : Magasins source ou cible non définis.", isError: true);
+        setState(() => isLoading = false);
+        return;
+      }
+
+      if (sourceWhs == targetWhs) {
+        _showStatusSnackBar("Le magasin source et le magasin cible sont identiques.", isError: true);
         setState(() => isLoading = false);
         return;
       }
@@ -156,20 +184,16 @@ class _HomeScreenState extends State<HomeScreen> {
       if (error == null) {
         _showStatusSnackBar("Transfert de $_calculatedTotalQuantity unités complété vers $targetWhs");
 
+        // Réinitialisation complète de l'écran après le transfert réussi
         setState(() {
-          double cartonsTransferes = double.tryParse(_cartonController.text) ?? 0;
-          double resteCartons = lotDetails!.qteCarton - cartonsTransferes;
+          lotDetails = null;
+          _selectedCurrentWhs = null;
+          _lotController.clear();
+          _cartonController.clear();
+          _calculatedTotalQuantity = 0.0;
 
-          if (resteCartons <= 0) {
-            lotDetails = null;
-            _lotController.clear();
-            _cartonController.clear();
-            _calculatedTotalQuantity = 0.0;
-          } else {
-            lotDetails = lotDetails!.copyWith(qteCarton: resteCartons);
-            _cartonController.text = lotDetails!.qteCarton.toStringAsFixed(0);
-            _calculatedTotalQuantity = lotDetails!.totalQuantity;
-          }
+          // Passage automatique au statut scan successif pour le prochain scan de ce lot
+          _isFirstScan = false;
         });
       } else {
         _showStatusSnackBar("Erreur SAP : $error", isError: true);
@@ -259,54 +283,8 @@ class _HomeScreenState extends State<HomeScreen> {
           const Text("Gestion des Flux", style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)),
           const SizedBox(height: 4),
           const Text("Identification Lot", style: TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 20),
-          _buildWarehouseDropdown(),
-          const SizedBox(height: 15),
+          const SizedBox(height: 25),
           _buildSearchBox(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildWarehouseDropdown() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 15),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: Colors.white.withOpacity(0.15)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.warehouse_rounded, color: Colors.white70, size: 20),
-          const SizedBox(width: 12),
-          Expanded(
-            child: _isLoadingWhs
-                ? const LinearProgressIndicator(backgroundColor: Colors.transparent, color: Colors.white38)
-                : DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                value: _selectedSourceWhs,
-                dropdownColor: primaryDark,
-                icon: const Icon(Icons.arrow_drop_down_rounded, color: Colors.white),
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14),
-                hint: const Text("Sélectionner magasin d'accueil...", style: TextStyle(color: Colors.white30)),
-                isExpanded: true,
-                items: _warehouses.map((whs) {
-                  return DropdownMenuItem<String>(
-                    value: whs['code'],
-                    child: Text("[${whs['code']}] ${whs['name']}", overflow: TextOverflow.ellipsis),
-                  );
-                }).toList(),
-                onChanged: _onWarehouseChanged,
-              ),
-            ),
-          ),
-          if (!_isLoadingWhs)
-            IconButton(
-              icon: const Icon(Icons.refresh_rounded, color: Colors.white60, size: 18),
-              onPressed: _loadWarehouses,
-              visualDensity: VisualDensity.compact,
-            )
         ],
       ),
     );
@@ -362,6 +340,7 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 _infoTile(Icons.api_rounded, "REFERENCE ARTICLE", lotDetails!.itemCode),
                 _infoTile(Icons.layers_rounded, "IDENTIFIANT LOT", lotDetails!.distNumber),
+                _buildDropdownWarehouseTile(),
                 _editableCartonTile(Icons.inventory_2_outlined, "CONDITIONNEMENT (CARTONS)"),
                 const Padding(padding: EdgeInsets.symmetric(vertical: 15), child: Divider(color: Color(0xFFF1F5F9))),
                 Row(
@@ -394,6 +373,52 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(width: 12),
           Expanded(child: Text(lotDetails!.itemName.toUpperCase(),
               style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13, color: primaryDark, letterSpacing: 0.5))),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDropdownWarehouseTile() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        children: [
+          Icon(Icons.warehouse_rounded, size: 20, color: accentIndigo),
+          const SizedBox(width: 15),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text("MAGASIN ACTUEL DE REPRISE", style: TextStyle(color: Colors.grey[400], fontWeight: FontWeight.w800, fontSize: 9, letterSpacing: 1)),
+                const SizedBox(height: 2),
+                DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _selectedCurrentWhs,
+                    isExpanded: true,
+                    dropdownColor: Colors.white,
+                    style: TextStyle(fontWeight: FontWeight.bold, color: primaryDark, fontSize: 14),
+                    icon: Icon(Icons.arrow_drop_down_circle_rounded, color: accentIndigo.withOpacity(0.7), size: 20),
+                    items: _availableWarehouses.map((Map<String, String> whs) {
+                      return DropdownMenuItem<String>(
+                        value: whs['code'],
+                        child: Text(
+                          "[${whs['code']}] ${whs['name']}",
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (newValue) {
+                      setState(() {
+                        _selectedCurrentWhs = newValue;
+                      });
+                    },
+                  ),
+                ),
+                Container(height: 1, color: Colors.grey.withOpacity(0.2)),
+              ],
+            ),
+          ),
         ],
       ),
     );
