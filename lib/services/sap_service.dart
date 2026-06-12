@@ -257,6 +257,41 @@ class SapService {
     }
   }
 
+  // 🟢 AJOUT DANS SAP_SERVICE : Met à jour dynamiquement le champ utilisateur U_QteCarton
+  Future<bool> updateBatchCartonQuantity({
+    required String itemCode,
+    required String batchNumber,
+    required double newCartonQty,
+  }) async {
+    if (sessionId == null) await login();
+    try {
+      // Endpoint standard SAP pour modifier les détails d'un numéro de lot existant
+      final String url = "$baseUrl/BatchNumberDetails(ItemCode='$itemCode',BatchNumber='$batchNumber')";
+
+      final response = await http.patch(
+        Uri.parse(url),
+        headers: {
+          "Cookie": "B1SESSION=$sessionId",
+          "Content-Type": "application/json"
+        },
+        body: jsonEncode({
+          "U_QteCarton": newCartonQty // Transmet la valeur numérique à ton champ personnalisé UDF
+        }),
+      );
+
+      if (response.statusCode == 204 || response.statusCode == 200) {
+        print("✅ Champ U_QteCarton mis à jour avec succès dans SAP ($newCartonQty).");
+        return true;
+      } else {
+        print("❌ Échec MAJ U_QteCarton: ${response.statusCode} - ${response.body}");
+        return false;
+      }
+    } catch (e) {
+      print("❌ Exception lors de la MAJ de U_QteCarton : $e");
+      return false;
+    }
+  }
+
   // 7. Lier l'article au magasin de destination (Obligatoire SAP)
   Future<bool> lierArticleAuMagasin(String itemCode, String toWhs) async {
     if (sessionId == null) await login();

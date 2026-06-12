@@ -61,7 +61,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     try {
-      // 2. Appel à ta méthode SAP fetchAllWarehouses
+      // 2. Appel à la méthode SAP fetchAllWarehouses
       List<Map<String, String>> sapWarehouses = await _sapService.fetchAllWarehouses();
 
       if (sapWarehouses.isNotEmpty) {
@@ -102,8 +102,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     String? globalParamWhs = prefs.getString('whsSource');
 
-    // REGLE MÉTIER 1er Scan : Vérification stricte du magasin Source général
+    // 🟢 RÈGLE MÉTIER CORRIGÉE : Ajustement du magasin d'accueil selon le contexte de scan
     if (_isFirstScan) {
+      // 1er Scan : Contrôle strict par rapport au magasin Source configuré globalement
       if (data.warehouse != null && data.warehouse != globalParamWhs) {
         setState(() => isLoading = false);
         _showStatusSnackBar(
@@ -113,28 +114,29 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
     } else {
-      // RÈGLE MÉTIER Scans Successifs : Vérification par rapport au champ d'accueil actuel de reprise
+      // Scans Successifs : On n'annule plus le scan si les magasins diffèrent !
+      // On informe l'utilisateur du changement d'emplacement détecté par SAP et on met à jour la sélection
       if (_selectedCurrentWhs != null && data.warehouse != _selectedCurrentWhs) {
-        setState(() => isLoading = false);
         _showStatusSnackBar(
-            "Vérification Échouée (Scan Successif) : Le magasin SAP [${data.warehouse}] ne correspond pas au magasin de reprise sélectionné [$_selectedCurrentWhs].",
-            isError: true
+            "Scan Successif : Emplacement mis à jour vers le magasin actuel SAP [${data.warehouse}].",
+            isError: false
         );
-        return;
       }
     }
 
     setState(() {
       lotDetails = data;
+      // Affectation dynamique du magasin retourné par SAP (Met à jour le Dropdown automatiquement)
       _selectedCurrentWhs = data.warehouse;
 
-      // Sécurité Dropdown : Si le magasin du lot n'est pas dans la liste globale, on l'injecte à la volée
+      // Sécurité Dropdown : Si le magasin retourné par SAP n'est pas encore dans la liste globale, on l'injecte à la volée
       bool exists = _availableWarehouses.any((whs) => whs['code'] == _selectedCurrentWhs);
       if (_selectedCurrentWhs != null && !exists) {
         _availableWarehouses.add({
           'code': _selectedCurrentWhs!,
-          'name': 'Magasin Actuel du Lot',
+          'name': 'Magasin du Lot (Détecté)',
         });
+        _availableWarehouses.sort((a, b) => a['code']!.compareTo(b['code']!));
       }
 
       _cartonController.text = lotDetails!.qteCarton.toString();
@@ -146,7 +148,10 @@ class _HomeScreenState extends State<HomeScreen> {
       _calculatedTotalQuantity = lotDetails!.totalQuantity;
       isLoading = false;
     });
-    _showStatusSnackBar("Validation réussie pour le lot !");
+
+    if (_isFirstScan) {
+      _showStatusSnackBar("Validation réussie pour le lot !");
+    }
   }
 
   Future<void> _executerTransfert(String type) async {
@@ -172,6 +177,7 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
+      // 1. Exécution du transfert physique de stock
       String? error = await _sapService.createStockTransfer(
         itemCode: lotDetails!.itemCode,
         batchNumber: lotDetails!.distNumber,
@@ -180,22 +186,36 @@ class _HomeScreenState extends State<HomeScreen> {
         quantity: _calculatedTotalQuantity,
       );
 
-      setState(() => isLoading = false);
       if (error == null) {
-        _showStatusSnackBar("Transfert de $_calculatedTotalQuantity unités complété vers $targetWhs");
+        // 🟢 2. SOLUTION : Récupération de la valeur saisie dans l'input carton
+        double nouvelleQteCarton = double.tryParse(_cartonController.text) ?? 0.0;
 
-        // Réinitialisation complète de l'écran après le transfert réussi
+        // 🟢 3. Envoi de la mise à jour du champ personnalisé U_QteCarton à SAP
+        bool isUdfUpdated = await _sapService.updateBatchCartonQuantity(
+          itemCode: lotDetails!.itemCode,
+          batchNumber: lotDetails!.distNumber,
+          newCartonQty: nouvelleQteCarton,
+        );
+
+        setState(() => isLoading = false);
+
+        if (isUdfUpdated) {
+          _showStatusSnackBar("Transfert complété et quantité cartons mise à jour dans SAP !");
+        } else {
+          _showStatusSnackBar("Transfert OK, mais échec de la mise à jour du champ U_QteCarton.", isError: true);
+        }
+
+        // Réinitialisation complète de l'écran après le succès
         setState(() {
           lotDetails = null;
           _selectedCurrentWhs = null;
           _lotController.clear();
           _cartonController.clear();
           _calculatedTotalQuantity = 0.0;
-
-          // Passage automatique au statut scan successif pour le prochain scan de ce lot
-          _isFirstScan = false;
+          _isFirstScan = true; // Prêt pour un tout nouveau lot
         });
       } else {
+        setState(() => isLoading = false);
         _showStatusSnackBar("Erreur SAP : $error", isError: true);
       }
     } catch (e) {
@@ -203,7 +223,6 @@ class _HomeScreenState extends State<HomeScreen> {
       _showStatusSnackBar("Exception système : $e", isError: true);
     }
   }
-
   void _updateCalculatedQuantity(String value) {
     if (value.isEmpty) {
       setState(() => _calculatedTotalQuantity = 0.0);
@@ -410,7 +429,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     }).toList(),
                     onChanged: (newValue) {
                       setState(() {
-                        _selectedCurrentWhs = newValue;
+                        _selectedCurrentWhs = newValue; // L'utilisateur peut librement modifier le magasin d'origine
                       });
                     },
                   ),
@@ -456,12 +475,14 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           Icon(icon, size: 20, color: accentIndigo.withOpacity(0.5)),
           const SizedBox(width: 15),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: TextStyle(color: Colors.grey[400], fontWeight: FontWeight.w800, fontSize: 9, letterSpacing: 1)),
-              Text(value, style: TextStyle(fontWeight: FontWeight.bold, color: primaryDark, fontSize: 15)),
-            ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: TextStyle(color: Colors.grey[400], fontWeight: FontWeight.w800, fontSize: 9, letterSpacing: 1)),
+                Text(value, style: TextStyle(fontWeight: FontWeight.bold, color: primaryDark, fontSize: 15)),
+              ],
+            ),
           ),
         ],
       ),
@@ -659,3 +680,4 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
+
