@@ -101,40 +101,42 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final prefs = await SharedPreferences.getInstance();
     String? globalParamWhs = prefs.getString('whsSource');
+    String? globalQuarantineWhs = prefs.getString('whsQuarantaine');
+    String? globalReleaseWhs = prefs.getString('whsLiberer');
 
-    // 🟢 RÈGLE MÉTIER CORRIGÉE : Ajustement du magasin d'accueil selon le contexte de scan
-    if (_isFirstScan) {
-      // 1er Scan : Contrôle strict par rapport au magasin Source configuré globalement
-      if (data.warehouse != null && data.warehouse != globalParamWhs) {
-        setState(() => isLoading = false);
-        _showStatusSnackBar(
-            "Vérification Échouée (1er Scan) : Ce lot appartient au magasin [${data.warehouse}] et non au magasin Source configuré [$globalParamWhs].",
-            isError: true
-        );
-        return;
-      }
-    } else {
-      // Scans Successifs : On n'annule plus le scan si les magasins diffèrent !
-      // On informe l'utilisateur du changement d'emplacement détecté par SAP et on met à jour la sélection
-      if (_selectedCurrentWhs != null && data.warehouse != _selectedCurrentWhs) {
-        _showStatusSnackBar(
-            "Scan Successif : Emplacement mis à jour vers le magasin actuel SAP [${data.warehouse}].",
-            isError: false
-        );
-      }
+    // Liste des magasins autorisés pour l'application
+    List<String?> allowedWarehouses = [globalParamWhs, globalQuarantineWhs, globalReleaseWhs];
+
+    // Vérification de sécurité globale : le lot est-il dans un magasin connu ?
+    if (data.warehouse != null && !allowedWarehouses.contains(data.warehouse)) {
+      setState(() => isLoading = false);
+      _showStatusSnackBar(
+          "Vérification Échouée : Ce lot appartient au magasin [${data.warehouse}] qui n'est pas pris en charge.",
+          isError: true
+      );
+      return;
     }
 
     setState(() {
       lotDetails = data;
-      // Affectation dynamique du magasin retourné par SAP (Met à jour le Dropdown automatiquement)
-      _selectedCurrentWhs = data.warehouse;
 
-      // Sécurité Dropdown : Si le magasin retourné par SAP n'est pas encore dans la liste globale, on l'injecte à la volée
+      // 🟢 APPLICATION DE VOTRE RÈGLE MÉTIER :
+      if (data.warehouse == globalParamWhs) {
+        // SCÉNARIO 1 : C'est le 1er scan (le lot est encore dans le magasin source)
+        // -> On force l'utilisation du magasin choisi dans le paramétrage
+        _selectedCurrentWhs = globalParamWhs;
+      } else {
+        // SCÉNARIO 2 : C'est le deuxième scan (le lot est déjà en Quarantaine ou Libéré)
+        // -> On prend dynamiquement le magasin actuel retourné par SAP
+        _selectedCurrentWhs = data.warehouse;
+      }
+
+      // Sécurité Dropdown : Si le magasin n'est pas dans la liste, on l'injecte à la volée
       bool exists = _availableWarehouses.any((whs) => whs['code'] == _selectedCurrentWhs);
       if (_selectedCurrentWhs != null && !exists) {
         _availableWarehouses.add({
           'code': _selectedCurrentWhs!,
-          'name': 'Magasin du Lot (Détecté)',
+          'name': 'Magasin détecté',
         });
         _availableWarehouses.sort((a, b) => a['code']!.compareTo(b['code']!));
       }
@@ -149,11 +151,8 @@ class _HomeScreenState extends State<HomeScreen> {
       isLoading = false;
     });
 
-    if (_isFirstScan) {
-      _showStatusSnackBar("Validation réussie pour le lot !");
-    }
+    _showStatusSnackBar("Validation réussie pour le lot !");
   }
-
   Future<void> _executerTransfert(String type) async {
     if (lotDetails == null || _calculatedTotalQuantity <= 0) return;
     setState(() => isLoading = true);
@@ -187,10 +186,10 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 
       if (error == null) {
-        // 🟢 2. SOLUTION : Récupération de la valeur saisie dans l'input carton
+        // 2. Récupération de la valeur saisie dans l'input carton
         double nouvelleQteCarton = double.tryParse(_cartonController.text) ?? 0.0;
 
-        // 🟢 3. Envoi de la mise à jour du champ personnalisé U_QteCarton à SAP
+        // 3. Envoi de la mise à jour du champ personnalisé U_QteCarton à SAP
         bool isUdfUpdated = await _sapService.updateBatchCartonQuantity(
           itemCode: lotDetails!.itemCode,
           batchNumber: lotDetails!.distNumber,
@@ -212,7 +211,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _lotController.clear();
           _cartonController.clear();
           _calculatedTotalQuantity = 0.0;
-          _isFirstScan = true; // Prêt pour un tout nouveau lot
+          _isFirstScan = true; // Prêt pour un tout nouveau scan ou re-scan
         });
       } else {
         setState(() => isLoading = false);
@@ -223,6 +222,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _showStatusSnackBar("Exception système : $e", isError: true);
     }
   }
+
   void _updateCalculatedQuantity(String value) {
     if (value.isEmpty) {
       setState(() => _calculatedTotalQuantity = 0.0);
@@ -680,4 +680,3 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
-

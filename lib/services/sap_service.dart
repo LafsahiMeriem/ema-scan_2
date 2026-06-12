@@ -184,8 +184,6 @@ class SapService {
   }
 
   // 6. Création du transfert de stock de Lot (StockTransfers)
-  // 6. Création du transfert de stock de Lot (StockTransfers)
-  // 6. Création du transfert de stock de Lot (StockTransfers)
   Future<String?> createStockTransfer({
     required String itemCode,
     required String batchNumber,
@@ -199,7 +197,6 @@ class SapService {
     }
 
     try {
-      // Construction du JSON corrigé (Sans le WarehouseCode dans BatchNumbers)
       final Map<String, dynamic> payload = {
         "FromWarehouse": fromWhs,
         "ToWarehouse": toWhs,
@@ -212,21 +209,9 @@ class SapService {
             "BatchNumbers": [
               {
                 "BatchNumber": batchNumber,
-                "Quantity": quantity, // 👈 Seul ce champ et BatchNumber sont valides ici
+                "Quantity": quantity,
               }
             ],
-            // 💡 SI VOTRE MAGASIN GÈRE LES EMPLACEMENTS (BINS) :
-            // Vous devez décommenter la section ci-dessous et y passer l'ID de l'emplacement (AbsEntry).
-            /*
-            "StockTransferLinesBinAllocations": [
-              {
-                "BinAbsEntry": 12, // 👈 Remplacer par l'ID de l'emplacement système SAP d'où sort le chocolat
-                "Quantity": quantity,
-                "BaseLineNumber": 0,
-                "BinActionType": "batFromWarehouse" // Indique que l'on sort de cet emplacement
-              }
-            ]
-            */
           }
         ]
       };
@@ -257,7 +242,8 @@ class SapService {
     }
   }
 
-  // 🟢 AJOUT DANS SAP_SERVICE : Met à jour dynamiquement le champ utilisateur U_QteCarton
+  // 🟢 SOLUTION OPTIMISÉE ET CORRIGÉE : Utilisation de l'AbsEntry et du bon nom de variable U_U_QteCarton
+// 🟢 ENVOI EN TANT QU'ENTIER (Whole Number)
   Future<bool> updateBatchCartonQuantity({
     required String itemCode,
     required String batchNumber,
@@ -265,27 +251,51 @@ class SapService {
   }) async {
     if (sessionId == null) await login();
     try {
-      // Endpoint standard SAP pour modifier les détails d'un numéro de lot existant
-      final String url = "$baseUrl/BatchNumberDetails(ItemCode='$itemCode',BatchNumber='$batchNumber')";
+      // Étape A : Trouver l'AbsEntry système de ce lot via un filtre OData strict
+      final String searchUrl = "$baseUrl/BatchNumberDetails?\$filter=ItemCode eq '$itemCode' and Batch eq '$batchNumber'";
 
-      final response = await http.patch(
-        Uri.parse(url),
+      final searchResponse = await http.get(
+        Uri.parse(searchUrl),
         headers: {
           "Cookie": "B1SESSION=$sessionId",
           "Content-Type": "application/json"
         },
-        body: jsonEncode({
-          "U_QteCarton": newCartonQty // Transmet la valeur numérique à ton champ personnalisé UDF
-        }),
       );
 
-      if (response.statusCode == 204 || response.statusCode == 200) {
-        print("✅ Champ U_QteCarton mis à jour avec succès dans SAP ($newCartonQty).");
-        return true;
-      } else {
-        print("❌ Échec MAJ U_QteCarton: ${response.statusCode} - ${response.body}");
-        return false;
+      if (searchResponse.statusCode == 200) {
+        final searchData = jsonDecode(searchResponse.body);
+
+        if (searchData['value'] != null && searchData['value'].isNotEmpty) {
+          // Extraction du AbsEntry
+          final int absEntry = searchData['value'][0]['DocEntry'] ?? searchData['value'][0]['AbsEntry'];
+
+          // Étape B : Lancer la mise à jour PATCH propre sur l'ID système identifié
+          final String patchUrl = "$baseUrl/BatchNumberDetails($absEntry)";
+          print("🔄 Envoi du PATCH SAP Service Layer sur l'entité ($absEntry)");
+
+          final response = await http.patch(
+            Uri.parse(patchUrl),
+            headers: {
+              "Cookie": "B1SESSION=$sessionId",
+              "Content-Type": "application/json"
+            },
+            body: jsonEncode({
+              // 📑 .toInt() supprime le ".0" pour envoyer un entier pur (ex: 10 au lieu de 10.0)
+              "U_U_QteCarton": newCartonQty.toInt()
+            }),
+          );
+
+          if (response.statusCode == 204 || response.statusCode == 200) {
+            print("✅ Champ U_U_QteCarton mis à jour avec succès dans SAP (${newCartonQty.toInt()}).");
+            return true;
+          } else {
+            print("❌ Échec lors du PATCH final (Status ${response.statusCode}) : ${response.body}");
+            return false;
+          }
+        }
       }
+      print("❌ Aucun lot correspondant trouvé dans SAP pour récupérer la clé interne (AbsEntry).");
+      return false;
     } catch (e) {
       print("❌ Exception lors de la MAJ de U_QteCarton : $e");
       return false;
@@ -309,4 +319,4 @@ class SapService {
       return false;
     }
   }
-} // Fin finale de la classe SapService
+}
