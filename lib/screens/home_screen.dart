@@ -104,10 +104,8 @@ class _HomeScreenState extends State<HomeScreen> {
     String? globalQuarantineWhs = prefs.getString('whsQuarantaine');
     String? globalReleaseWhs = prefs.getString('whsLiberer');
 
-    // Liste des magasins autorisés pour l'application
     List<String?> allowedWarehouses = [globalParamWhs, globalQuarantineWhs, globalReleaseWhs];
 
-    // Vérification de sécurité globale : le lot est-il dans un magasin connu ?
     if (data.warehouse != null && !allowedWarehouses.contains(data.warehouse)) {
       setState(() => isLoading = false);
       _showStatusSnackBar(
@@ -120,18 +118,12 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       lotDetails = data;
 
-      // 🟢 APPLICATION DE VOTRE RÈGLE MÉTIER :
       if (data.warehouse == globalParamWhs) {
-        // SCÉNARIO 1 : C'est le 1er scan (le lot est encore dans le magasin source)
-        // -> On force l'utilisation du magasin choisi dans le paramétrage
         _selectedCurrentWhs = globalParamWhs;
       } else {
-        // SCÉNARIO 2 : C'est le deuxième scan (le lot est déjà en Quarantaine ou Libéré)
-        // -> On prend dynamiquement le magasin actuel retourné par SAP
         _selectedCurrentWhs = data.warehouse;
       }
 
-      // Sécurité Dropdown : Si le magasin n'est pas dans la liste, on l'injecte à la volée
       bool exists = _availableWarehouses.any((whs) => whs['code'] == _selectedCurrentWhs);
       if (_selectedCurrentWhs != null && !exists) {
         _availableWarehouses.add({
@@ -141,18 +133,28 @@ class _HomeScreenState extends State<HomeScreen> {
         _availableWarehouses.sort((a, b) => a['code']!.compareTo(b['code']!));
       }
 
-      _cartonController.text = lotDetails!.qteCarton.toString();
-
+      // 🟢 AJUSTEMENT DU CALCUL POUR LE DEUXIÈME SCAN :
+      // On calcule le poids/quantité unitaire d'un carton basé sur la configuration globale initiale de SAP
       _quantiteParCarton = lotDetails!.qteCarton > 0
           ? (lotDetails!.totalQuantity / lotDetails!.qteCarton)
           : lotDetails!.totalQuantity;
 
-      _calculatedTotalQuantity = lotDetails!.totalQuantity;
+      // Si c'est un re-scan (deuxième scan), on calcule le nombre de cartons correspondant
+      // uniquement à la quantité restante présente dans ce magasin spécifique, au lieu d'afficher le global.
+      if (data.warehouse != globalParamWhs && _quantiteParCarton > 0) {
+        double cartonsCalcules = data.totalQuantity / _quantiteParCarton;
+        _cartonController.text = cartonsCalcules.toStringAsFixed(0);
+      } else {
+        _cartonController.text = lotDetails!.qteCarton.toString();
+      }
+
+      _calculatedTotalQuantity = data.totalQuantity;
       isLoading = false;
     });
 
     _showStatusSnackBar("Validation réussie pour le lot !");
   }
+
   Future<void> _executerTransfert(String type) async {
     if (lotDetails == null || _calculatedTotalQuantity <= 0) return;
     setState(() => isLoading = true);
