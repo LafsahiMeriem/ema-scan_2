@@ -25,7 +25,7 @@ class _HomeScreenState extends State<HomeScreen> {
   double _quantiteParCarton = 1.0;
   double _calculatedTotalQuantity = 0.0;
 
-  String? _selectedCurrentWhs; // Conserve le code du magasin actuel choisi ou détecté (ex: 'MAG_DISPO')
+  String? _selectedCurrentWhs; // Conserve le code du magasin actuel choisi ou détecté (Persistant entre les scans)
   List<Map<String, String>> _availableWarehouses = []; // Contient la liste structurée [{'code': '...', 'name': '...'}]
 
   // Permet de savoir si c'est le chargement initial du lot sur l'écran ou un scan successif
@@ -118,11 +118,9 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       lotDetails = data;
 
-      if (data.warehouse == globalParamWhs) {
-        _selectedCurrentWhs = globalParamWhs;
-      } else {
-        _selectedCurrentWhs = data.warehouse;
-      }
+      // 🟢 MODIFICATION : Conserve la dernière sélection manuelle ou le dernier magasin utilisé si existant.
+      // Si _selectedCurrentWhs est déjà renseigné, on ne l'écrase pas avec la valeur brute SAP du nouveau lot.
+      _selectedCurrentWhs = _selectedCurrentWhs ?? data.warehouse ?? globalParamWhs;
 
       bool exists = _availableWarehouses.any((whs) => whs['code'] == _selectedCurrentWhs);
       if (_selectedCurrentWhs != null && !exists) {
@@ -133,14 +131,11 @@ class _HomeScreenState extends State<HomeScreen> {
         _availableWarehouses.sort((a, b) => a['code']!.compareTo(b['code']!));
       }
 
-      // 🟢 AJUSTEMENT DU CALCUL POUR LE DEUXIÈME SCAN :
-      // On calcule le poids/quantité unitaire d'un carton basé sur la configuration globale initiale de SAP
+      // AJUSTEMENT DU CALCUL POUR LE DEUXIÈME SCAN :
       _quantiteParCarton = lotDetails!.qteCarton > 0
           ? (lotDetails!.totalQuantity / lotDetails!.qteCarton)
           : lotDetails!.totalQuantity;
 
-      // Si c'est un re-scan (deuxième scan), on calcule le nombre de cartons correspondant
-      // uniquement à la quantité restante présente dans ce magasin spécifique, au lieu d'afficher le global.
       if (data.warehouse != globalParamWhs && _quantiteParCarton > 0) {
         double cartonsCalcules = data.totalQuantity / _quantiteParCarton;
         _cartonController.text = cartonsCalcules.toStringAsFixed(0);
@@ -209,7 +204,8 @@ class _HomeScreenState extends State<HomeScreen> {
         // Réinitialisation complète de l'écran après le succès
         setState(() {
           lotDetails = null;
-          _selectedCurrentWhs = null;
+          // 🟢 MODIFICATION : On commente/supprime la remise à null pour garder le dernier magasin choisi en mémoire
+          // _selectedCurrentWhs = null;
           _lotController.clear();
           _cartonController.clear();
           _calculatedTotalQuantity = 0.0;

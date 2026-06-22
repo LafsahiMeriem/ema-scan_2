@@ -23,7 +23,7 @@ class SapService {
         Uri.parse('$baseUrl/Login'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
-          "CompanyDB": "DB_APP_WEB_HK",
+          "CompanyDB": "TEST_WEB",
           "UserName": "manager",
           "Password": "20@Y0ur20"
         }),
