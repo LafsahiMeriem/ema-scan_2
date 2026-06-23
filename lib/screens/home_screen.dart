@@ -118,8 +118,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       lotDetails = data;
 
-      // 🟢 MODIFICATION : Conserve la dernière sélection manuelle ou le dernier magasin utilisé si existant.
-      // Si _selectedCurrentWhs est déjà renseigné, on ne l'écrase pas avec la valeur brute SAP du nouveau lot.
+      // Conserve la dernière sélection manuelle ou le dernier magasin utilisé si existant.
       _selectedCurrentWhs = _selectedCurrentWhs ?? data.warehouse ?? globalParamWhs;
 
       bool exists = _availableWarehouses.any((whs) => whs['code'] == _selectedCurrentWhs);
@@ -173,20 +172,20 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
-      // 1. Exécution du transfert physique de stock
+      double nouvelleQteCarton = double.tryParse(_cartonController.text) ?? 0.0;
+
+      // 1. Exécution du transfert physique de stock avec l'UDF inclus
       String? error = await _sapService.createStockTransfer(
         itemCode: lotDetails!.itemCode,
         batchNumber: lotDetails!.distNumber,
         fromWhs: sourceWhs,
         toWhs: targetWhs,
         quantity: _calculatedTotalQuantity,
+        qteCarton: nouvelleQteCarton,
       );
 
       if (error == null) {
-        // 2. Récupération de la valeur saisie dans l'input carton
-        double nouvelleQteCarton = double.tryParse(_cartonController.text) ?? 0.0;
-
-        // 3. Envoi de la mise à jour du champ personnalisé U_QteCarton à SAP
+        // 2. Envoi de la mise à jour du champ personnalisé U_QteCarton à SAP (fiche descriptive lot)
         bool isUdfUpdated = await _sapService.updateBatchCartonQuantity(
           itemCode: lotDetails!.itemCode,
           batchNumber: lotDetails!.distNumber,
@@ -204,12 +203,10 @@ class _HomeScreenState extends State<HomeScreen> {
         // Réinitialisation complète de l'écran après le succès
         setState(() {
           lotDetails = null;
-          // 🟢 MODIFICATION : On commente/supprime la remise à null pour garder le dernier magasin choisi en mémoire
-          // _selectedCurrentWhs = null;
           _lotController.clear();
           _cartonController.clear();
           _calculatedTotalQuantity = 0.0;
-          _isFirstScan = true; // Prêt pour un tout nouveau scan ou re-scan
+          _isFirstScan = true;
         });
       } else {
         setState(() => isLoading = false);
@@ -253,8 +250,8 @@ class _HomeScreenState extends State<HomeScreen> {
           _buildPremiumHeader(),
           Expanded(
             child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 400),
-              child: _buildContent(),
+              duration: const Duration(milliseconds: 300),
+              child: _buildContent(), // Les enfants ont désormais des ValueKey uniques
             ),
           ),
         ],
@@ -264,10 +261,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildContent() {
     if (isLoading) {
-      return Center(child: CircularProgressIndicator(color: accentIndigo, strokeWidth: 2));
+      return Center(
+        key: const ValueKey('state_loading'), // 🟢 Clé pour AnimatedSwitcher
+        child: CircularProgressIndicator(color: accentIndigo, strokeWidth: 2),
+      );
     }
     if (lotDetails != null) {
       return SingleChildScrollView(
+        key: const ValueKey('state_data_view'), // 🟢 Clé pour AnimatedSwitcher
         physics: const BouncingScrollPhysics(),
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 25),
         child: Column(
@@ -333,7 +334,10 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             onPressed: () async {
               final res = await Navigator.push(context, MaterialPageRoute(builder: (_) => const ScannerScreen()));
-              if (res != null) { _lotController.text = res; _fetchData(); }
+              if (res != null) {
+                _lotController.text = res;
+                _fetchData();
+              }
             },
           ),
         ),
@@ -427,7 +431,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     }).toList(),
                     onChanged: (newValue) {
                       setState(() {
-                        _selectedCurrentWhs = newValue; // L'utilisateur peut librement modifier le magasin d'origine
+                        _selectedCurrentWhs = newValue;
                       });
                     },
                   ),
@@ -577,6 +581,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildEmptyState() {
     return Center(
+      key: const ValueKey('state_empty'), // 🟢 Clé pour AnimatedSwitcher
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [

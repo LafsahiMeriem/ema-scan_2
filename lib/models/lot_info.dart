@@ -16,6 +16,8 @@ class LotInfo {
     required this.distNumber,
     required this.qteCarton,
     required this.numInCnt,
+
+
     this.mfrDate,
     this.expDate,
     this.mfrSerial,

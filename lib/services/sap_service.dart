@@ -190,6 +190,7 @@ class SapService {
     required String fromWhs,
     required String toWhs,
     required double quantity,
+    required double qteCarton, // 👈 Nouveau paramètre
   }) async {
     if (sessionId == null) {
       bool isLoggedIn = await login();
@@ -206,6 +207,7 @@ class SapService {
             "Quantity": quantity,
             "FromWarehouseCode": fromWhs,
             "WarehouseCode": toWhs,
+            "U_QteCarton": qteCarton, // 👈 C'est ici qu'on l'ajoute pour la ligne SAP !
             "BatchNumbers": [
               {
                 "BatchNumber": batchNumber,
